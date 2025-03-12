@@ -148,7 +148,7 @@ class ModelTrainer:
             return new_best
 
     def train(self, train_data_dir, val_data_dir, save_dir):
-
+        os.makedirs(save_dir, exist_ok=True)
         self.init_loaders(train_data_dir, val_data_dir)
         self.model, self.params = get_model(self.params)
         self.model.to(self.device)
