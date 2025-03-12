@@ -1,3 +1,4 @@
+import argparse
 import os
 import time
 
@@ -206,11 +207,18 @@ class ModelTrainer:
 
 
 if __name__ == '__main__':
-    data_dir = '/mnt/d/dimes/dataset/ds004199/'
-    preprocessed_data_dir = '/mnt/d/dimes/dataset/ds004199_fsl'
-    train_data_dir = preprocessed_data_dir
-    val_data_dir = preprocessed_data_dir
-    save_dir = '/mnt/d/dimes/dataset/model'
+    parser = argparse.ArgumentParser(description='Train Model for FCD Detection.')
+    parser.add_argument('--train_dir', type=str, required=True,
+                        help='Path to the train dataset directory.')
+    parser.add_argument('--val_dir', type=str, required=True,
+                        help='Path to the validation dataset directory.')
+    parser.add_argument('--save_dir', type=str, required=True,
+                        help='Path to the model output directory.')
+
+    args = parser.parse_args()
+    train_data_dir =  args.train_dir #'/mnt/d/dimes/dataset/ds004199_fsl'
+    val_data_dir =  args.val_dir #'/mnt/d/dimes/dataset/ds004199_fsl'
+    save_dir = args.save_dir #'/mnt/d/dimes/dataset/model'
 
     model_trainer = ModelTrainer(params, device)
     model_trainer.train(train_data_dir, val_data_dir, save_dir)
