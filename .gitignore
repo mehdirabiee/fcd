@@ -177,3 +177,4 @@ cython_debug/
 inputs
 outputs
 pretrained
+wandb

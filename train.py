@@ -12,7 +12,10 @@ from monai.networks import one_hot
 from monai.utils import first, set_determinism
 from monai.transforms import Compose, Activations, AsDiscrete
 from tqdm import tqdm
-
+import logging
+import wandb
+from dotenv import load_dotenv
+load_dotenv()
 from get_data import get_data
 from get_model import get_model
 from get_transforms import get_trainval_transforms
@@ -42,6 +45,7 @@ class ModelTrainer:
         self.val_interval = 1
         self.model = None
         self.train_start_time = time.time()
+        wandb.login(key=os.environ["WANDB_API_KEY"])
         self.init_stats()
 
 
@@ -145,7 +149,7 @@ class ModelTrainer:
                 f" at epoch: {self.best_metric_epoch}",
                 flush=True
             )
-            return new_best
+            return new_best, metric, metric_bg, metric_fcd
 
     def train(self, train_data_dir, val_data_dir, save_dir):
         os.makedirs(save_dir, exist_ok=True)
@@ -154,10 +158,27 @@ class ModelTrainer:
         self.model.to(self.device)
         self.init_stats()
 
+        # Load existing model weights if available
+        model_path = os.path.join(save_dir, "best_metric_model.pth")
+        if os.path.exists(model_path):
+            self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+            print(f"Loaded existing model weights from {model_path}")
+
+        # Initialize Weights & Biases
+        wandb.init(project="fcd_detection", name="MRI_Training_Run", config=self.params)
+        wandb.watch(self.model, log="all")
+
+        # Create a log file
+        log_file = os.path.join(save_dir, "training_log.txt")
+        with open(log_file, "w") as log:
+            log.write("Epoch,Loss,Time\n")
+
         max_epochs = 300
         loss_function = DiceLoss(include_background=False, smooth_nr=0, smooth_dr=1e-5, squared_pred=True, to_onehot_y=True, sigmoid=False, softmax=True)
         optimizer = torch.optim.Adam(self.model.parameters(), 1e-4, weight_decay=1e-5)
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs)
+
+
 
         # use amp to accelerate training
         scaler = torch.amp.GradScaler("cuda")
@@ -192,15 +213,36 @@ class ModelTrainer:
                 scaler.update()
                 epoch_loss += loss.item()
                 train_iterator.set_description(f"train_loss: {loss.item():.4f}")
+
             lr_scheduler.step()
             epoch_loss /= step
             epoch_loss_values.append(epoch_loss)
-            print(f"epoch {epoch + 1} average loss: {epoch_loss:.4f}, time: {(time.time() - epoch_start):.4f}", flush=True)
 
+            elapsed_time = time.time() - epoch_start
+            print(f"epoch {epoch + 1} average loss: {epoch_loss:.4f}, time: {elapsed_time:.4f}", flush=True)
+
+            # Validation Step
+            val_dice, val_dice_bg, val_dice_fcd = None, None, None
             if (epoch + 1) % self.val_interval == 0:
-                if self.validate(epoch):
-                    torch.save(self.model.state_dict(), os.path.join(save_dir, "best_metric_model.pth"))
+                new_best, val_dice, val_dice_bg, val_dice_fcd = self.validate(epoch)
+                if new_best:
+                    torch.save(self.model.state_dict(), model_path)
                     print("saved new best metric model", flush=True)
+
+            # Log results to wandb
+            wandb.log({
+                "train_loss": epoch_loss,
+                "val_dice_bg": val_dice_bg if val_dice_bg is not None else 0,
+                "val_dice_fcd": val_dice_fcd if val_dice_fcd is not None else 0,
+            })
+
+            # Write to log file
+            with open(log_file, "a") as log:
+                log_message = f"{epoch + 1},{epoch_loss:.4f},"
+                if val_dice:
+                    log_message += f"{val_dice:.4f},{val_dice_bg:.4f},{val_dice_fcd:.4f},"
+                log_message += f"{elapsed_time:.4f}"
+                log.write( log_message + "\n")
 
         total_time = time.time() - self.train_start_time
         print(f"train completed, total time: {total_time}.")
