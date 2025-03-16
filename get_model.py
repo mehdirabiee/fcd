@@ -5,6 +5,8 @@ from networks2 import MS_DSA_NET
 from monai.networks.nets import UNETR, SwinUNETR, DynUNet, SegResNet, VNet
 from monai.networks.layers.factories import Norm,Act
 
+from networks2.camst_net import CAMST
+
 def get_model(params):
 
     if params['patch_size'][0] == params['patch_size'][1] and params['patch_size'][0] == params['patch_size'][2]:
