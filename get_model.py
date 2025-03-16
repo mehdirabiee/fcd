@@ -1,8 +1,8 @@
 import os
 import torch
 from thop import profile, clever_format
-from networks2 import MS_DSA_NET, CAMST
-from monai.networks.nets import UNETR, SwinUNETR, UNEST, DynUNet, SegResNet, VNet
+from networks2 import MS_DSA_NET
+from monai.networks.nets import UNETR, SwinUNETR, DynUNet, SegResNet, VNet
 from monai.networks.layers.factories import Norm,Act
 
 def get_model(params):
@@ -80,25 +80,6 @@ def get_model(params):
         )
         model_desc_str = 'SwinUNETR_{}_fs{}'.format(str_ps, params['feature_size'])
 
-    elif 'UNEST' == params['model_type']:
-        # UNEST: UNet-like architecture with Nested Hierarchical Transformer
-        # Reference: "Zhang et al., Nested Hierarchical Transformer: Towards Accurate,
-        # Data-Efficient and Interpretable Visual Understanding"
-        # https://arxiv.org/abs/2105.12723
-        # Key features: Hierarchical transformer with nested attention for better feature extraction
-        model = UNEST(
-            in_channels=params['chans_in'],
-            out_channels=params['chans_out'],
-            img_size=params['patch_size'],
-            feature_size=params['feature_size'],
-            hidden_size=768,
-            mlp_dim=3072,
-            num_heads=12,
-            norm_name='instance',
-            res_block=True,
-            dropout_rate=0.1,
-        )
-        model_desc_str = 'UNEST_{}_fs{}'.format(str_ps, params['feature_size'])
 
     elif 'DynUNet' == params['model_type']:
         # DynUNet: Dynamic UNet for variable input sizes

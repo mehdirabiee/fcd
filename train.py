@@ -20,16 +20,15 @@ load_dotenv()
 from get_data import get_data
 from get_model import get_model
 from get_transforms import get_trainval_transforms
-from networks2 import CorticalAwareLoss
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 set_determinism(seed=0)
 params = dict()
 
 params['model_name'] = './pretrained/model.pth'
-params['model_type'] = 'CAMST'  # Default to CAMST model
+params['model_type'] = 'MS_DSA_NET'  # Default to MS_DSA_NET
 params['sa_type'] = 'parallel'
-params['chans_in'] = 2  # Will be updated based on include_thickness
+params['chans_in'] = 2
 params['chans_out'] = 2
 params['feature_size'] = 16
 params['project_size'] = 64
@@ -49,7 +48,7 @@ class ModelTrainer:
         self.train_start_time = time.time()
         wandb.login(key=os.environ["WANDB_API_KEY"])
         self.init_stats()
-        self.scaler = torch.cuda.amp.GradScaler()
+        self.scaler = torch.amp.GradScaler('cuda')
         self.early_stopping_patience = 15
         self.early_stopping_counter = 0
         self.min_lr = 1e-6
@@ -62,53 +61,39 @@ class ModelTrainer:
         self.metric_values_bg = []
         self.metric_values_fcd = []
 
-    def init_loaders(self, train_data_dir, val_data_dir, include_thickness=False):
+    def init_loaders(self, train_data_dir, val_data_dir):
         train_transform, val_transform = get_trainval_transforms(self.params)
 
-        train_dict = get_data(train_data_dir, self.params, include_thickness)
+        train_dict = get_data(train_data_dir, self.params)
         train_ds = CacheDataset(data=train_dict, transform=train_transform, cache_num=4, cache_rate=1,
                                 num_workers=self.params['num_workers'])
         self.train_loader = DataLoader(train_ds, batch_size=1, shuffle=True, num_workers=self.params['num_workers'],
                                        pin_memory=True)
 
-        val_dict = get_data(val_data_dir, self.params, include_thickness)
+        val_dict = get_data(val_data_dir, self.params)
         val_ds = CacheDataset(data=val_dict, transform=val_transform, cache_num=4, cache_rate=1,
                               num_workers=1)
         self.val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=self.params['num_workers'],
                                      pin_memory=True)
 
     def get_loss_function(self):
-        if self.params['model_type'] == 'CAMST':
-            # For CAMST, use the specialized CorticalAwareLoss
-            return CorticalAwareLoss(alpha=0.5, beta=0.3)
-        else:
-            # For other models, use combination of Dice and BCE loss
-            return DiceCELoss(
-                include_background=False,
-                to_onehot_y=True,
-                softmax=True,
-                lambda_dice=0.5,
-                lambda_ce=0.5
-            )
+        return DiceCELoss(
+            include_background=False,
+            to_onehot_y=True,
+            softmax=True,
+            lambda_dice=0.5,
+            lambda_ce=0.5
+        )
 
-    def inference(self, input, thickness_map=None):
+    def inference(self, input):
         def _compute(input):
-            if self.params['model_type'] == 'CAMST' and thickness_map is not None:
-                return sliding_window_inference(
-                    inputs=input,
-                    roi_size=self.params["patch_size"],
-                    sw_batch_size=2,
-                    predictor=lambda x: self.model(x, thickness_map),
-                    overlap=0.5,
-                )
-            else:
-                return sliding_window_inference(
-                    inputs=input,
-                    roi_size=self.params["patch_size"],
-                    sw_batch_size=2,
-                    predictor=self.model,
-                    overlap=0.5,
-                )
+            return sliding_window_inference(
+                inputs=input,
+                roi_size=self.params["patch_size"],
+                sw_batch_size=2,
+                predictor=self.model,
+                overlap=0.5,
+            )
 
         if self.VAL_AMP:
             with torch.amp.autocast("cuda"):
@@ -133,22 +118,8 @@ class ModelTrainer:
                     val_data["label"].to(self.device, dtype=torch.float32),
                 )
                 
-                # Extract thickness map for CAMST model
-                thickness_map = None
-                if self.params['model_type'] == 'CAMST' and val_inputs.shape[1] > 2:
-                    # Extract thickness map (third channel)
-                    thickness_map = val_inputs[:, 2:3]
-                    # Remove thickness map from inputs for models that don't expect it
-                    val_inputs = val_inputs[:, :2]
-                
-                val_outputs = self.inference(val_inputs, thickness_map)
-                
-                # Calculate validation loss
-                if self.params['model_type'] == 'CAMST':
-                    val_loss += self.loss_function(val_outputs, val_labels, thickness_map).item()
-                else:
-                    val_loss += self.loss_function(val_outputs, val_labels).item()
-                
+                val_outputs = self.inference(val_inputs)
+                val_loss += self.loss_function(val_outputs, val_labels).item()
                 num_val_batches += 1
                 
                 val_outputs = [post_trans(i) for i in decollate_batch(val_outputs)]
@@ -193,12 +164,7 @@ class ModelTrainer:
     def train(self, train_data_dir, val_data_dir, save_dir):
         os.makedirs(save_dir, exist_ok=True)
         
-        # Update number of input channels based on thickness map inclusion
-        include_thickness = self.params['model_type'] == 'CAMST'
-        if include_thickness:
-            self.params['chans_in'] = 3  # T1, FLAIR, and thickness map
-        
-        self.init_loaders(train_data_dir, val_data_dir, include_thickness)
+        self.init_loaders(train_data_dir, val_data_dir)
         self.model, self.params = get_model(self.params)
         self.model.to(self.device)
         self.init_stats()
@@ -261,16 +227,8 @@ class ModelTrainer:
                 optimizer.zero_grad()
                 
                 with torch.amp.autocast("cuda"):
-                    if self.params['model_type'] == 'CAMST':
-                        # Extract thickness map (third channel)
-                        thickness_map = inputs[:, 2:3]
-                        # Remove thickness map from inputs
-                        model_inputs = inputs[:, :2]
-                        outputs = self.model(model_inputs, thickness_map)
-                        loss = self.loss_function(outputs, labels, thickness_map)
-                    else:
-                        outputs = self.model(inputs)
-                        loss = self.loss_function(outputs, labels)
+                    outputs = self.model(inputs)
+                    loss = self.loss_function(outputs, labels)
                 
                 self.scaler.scale(loss).backward()
                 self.scaler.step(optimizer)
@@ -341,8 +299,8 @@ if __name__ == '__main__':
                         help='Path to the validation dataset directory.')
     parser.add_argument('--save_dir', type=str, required=True,
                         help='Path to the model output directory.')
-    parser.add_argument('--model_type', type=str, default='CAMST',
-                        help='Model type to use (CAMST, MS_DSA_NET, etc.)')
+    parser.add_argument('--model_type', type=str, default='MS_DSA_NET',
+                        help='Model type to use (default: MS_DSA_NET)')
 
     args = parser.parse_args()
     params['model_type'] = args.model_type
