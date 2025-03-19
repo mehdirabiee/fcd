@@ -27,6 +27,11 @@ from monai.transforms import (
     Invertd,
     SelectItemsd,
     ConcatItemsd,
+    RandCoarseDropoutd,
+    RandAffined,
+    RandBiasFieldd,
+    RandGaussianSmoothd,
+    RandSpatialCropd,
 )
 
 def get_test_transforms(params):
@@ -66,6 +71,7 @@ def get_test_transforms(params):
 def get_trainval_transforms(params):
     train_transforms = Compose(
         [
+            # Basic loading and preprocessing
             LoadImaged(keys=["image", "label"], image_only=False),
             EnsureChannelFirstd(keys=["image", "label"]),
             Orientationd(keys=["image", "label"], axcodes="RAS"),
@@ -78,6 +84,8 @@ def get_trainval_transforms(params):
                 clip=True, 
                 channel_wise=True
             ),
+            
+            # Enhanced cropping with more control
             RandCropByPosNegLabeld(
                 keys=["image", "label"],
                 label_key="label",
@@ -88,6 +96,8 @@ def get_trainval_transforms(params):
                 image_key=None,
                 image_threshold=0,
             ),
+            
+            # Spatial transforms
             RandFlipd(keys=["image", "label"], spatial_axis=[0], prob=0.5),
             RandFlipd(keys=["image", "label"], spatial_axis=[1], prob=0.5),
             RandFlipd(keys=["image", "label"], spatial_axis=[2], prob=0.5),
@@ -97,8 +107,63 @@ def get_trainval_transforms(params):
                 mode=["bilinear", "nearest"],
                 prob=0.5
             ),
+            
+            # Additional spatial transforms
+            RandSpatialCropd(
+                keys=["image", "label"],
+                roi_size=params['patch_size'],
+                random_size=False,
+                random_center=True,
+            ),
+            
+            # Elastic deformation
+            RandAffined(
+                keys=["image", "label"],
+                prob=0.3,
+                rotate_range=(0.05, 0.05, 0.05),
+                scale_range=(0.1, 0.1, 0.1),
+                mode=["bilinear", "nearest"],
+                padding_mode="zeros"
+            ),
+            
+            # Intensity transforms
             RandShiftIntensityd(keys=["image"], offsets=0.1, prob=0.5),
             RandGaussianNoised(keys=["image"], std=0.1, prob=0.5),
+            RandScaleIntensityd(
+                keys=["image"],
+                factors=0.2,
+                prob=0.5
+            ),
+            
+            # Additional intensity normalization
+            NormalizeIntensityd(
+                keys=["image"],
+                subtrahend=0.5,
+                divisor=0.5,
+                nonzero=True
+            ),
+            
+            # MRI-specific transforms
+            RandBiasFieldd(
+                keys=["image"],
+                prob=0.3,
+                degree=3,
+                coeff_range=(0.0, 0.1)
+            ),
+            RandGaussianSmoothd(
+                keys=["image"],
+                sigma_x=(0.5, 1.5),
+                prob=0.3
+            ),
+            
+            # Masking transforms
+            RandCoarseDropoutd(
+                keys=["image"],
+                holes=5,
+                spatial_size=[16, 16, 16],
+                fill_value=0,
+                prob=0.3
+            ),
         ]
     )
 

@@ -76,7 +76,7 @@ def get_model(params):
             img_size=params['patch_size'],
             in_channels=params['chans_in'],
             out_channels=params['chans_out'],
-            feature_size=params['feature_size'],
+            feature_size=params['feature_size'] * 12,
             use_checkpoint=True,  # Enable gradient checkpointing to save memory
             spatial_dims=3,       # 3D input for volumetric segmentation
         )
